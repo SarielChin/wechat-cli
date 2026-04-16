@@ -1,28 +1,102 @@
 ---
 name: wechat-cli
-version: 1.0.0
+version: 1.1.0
 description: |
-  微信聊天记录查询工具：查看最近会话、读取聊天记录、全局搜索消息、查询联系人和群成员、统计聊天数据、导出聊天记录、查看收藏、检查未读消息和新消息增量。当用户需要查微信聊天记录、搜索微信消息、查看微信联系人、导出微信对话、统计聊天活跃度、查看未读消息时使用。即使用户只是说"帮我找一下微信里xxx说的那条消息"、"看看群里最近聊了什么"、"导出和某人的聊天记录"，也应该触发。
+  微信本地聊天数据查询工具。只要用户想查看这台机器上的微信聊天记录、搜索消息、查联系人或群成员、看最近会话、未读消息、收藏、聊天统计、导出对话，或者提到“微信里”“群里谁说过”“把这段聊天导出来”“最近谁联系我了”“这个群谁最活跃”，都应该优先使用这个技能；即使用户没有明确说 wechat-cli，也应触发。
 metadata:
   requires:
     bins: ["wechat-cli"]
   cliHelp: "wechat-cli --help"
 ---
 
-# wechat-cli 命令参考
+# wechat-cli 技能
 
-wechat-cli 是一个**只读**的本地工具，从本机微信的加密 SQLite 数据库解密查询数据，不会联网、不会修改任何数据。
+wechat-cli 是一个**只读**的本地查询工具，用来读取这台机器上的微信数据库并返回结构化结果。它不会联网，也不会修改聊天数据。
 
-## 安全与执行规则（必须遵守）
+## 何时使用
 
-- 默认仅执行只读查询命令（`sessions/history/search/contacts/members/stats/favorites/unread/new-messages`）。
-- 任何涉及 `init` / `init --force` / `sudo` / `codesign` 的操作，必须先明确告知风险并获得用户确认后再执行。
-- 严禁输出或分享 `~/.wechat-cli/all_keys.json` 内容；返回结果需最小化披露，避免泄露密钥、wxid、手机号、文件绝对路径等敏感信息。
-- 若用户请求导出或大批量检索，优先缩小时间范围与数量（`--start-time/--end-time/--limit`）。
+当用户想从**本地微信数据**里获取信息时，使用这个技能。典型触发方式：
+
+- “帮我查微信里谁发过这句话”
+- “看看和某人的聊天记录”
+- “最近谁联系我了”
+- “这个群里都有谁”
+- “导出这段聊天”
+- “找一下这个微信号/联系人”
+- “看看未读消息”
+- “上次看完之后又来了哪些新消息”
+- “我收藏过那篇文章吗”
+- “这个群谁最活跃”
+
+如果用户只是泛泛提到“微信里”“群里”“聊天记录”“联系人”“未读”“收藏”“导出聊天”“最近消息”，也应该优先想到这个技能。
+
+## 执行原则
+
+1. 先判断用户要的是：最近会话、历史消息、全文搜索、联系人、群成员、统计、导出、收藏、未读，还是增量新消息。
+2. 默认优先用**最小范围**查询：限制聊天对象、时间范围和 `--limit`，避免一次性拉太多数据。
+3. 默认优先用 `--format json` 做结构化查询；只有用户明确要纯文本展示或导出文件时，再用 `text` 或 `export`。
+4. 如果聊天对象不明确，先用 `contacts --query` 辅助确认名字，再继续查 `history`、`search`、`members`、`stats`、`export`。
+5. 如果想找“谁说过某句话/某个关键词”，优先 `search`；如果已经知道聊天对象且要连续上下文，优先 `history`。
+6. 输出时做最小披露：总结重点，不泄露密钥、完整 wxid、手机号、绝对路径等敏感信息，除非用户明确需要。
+
+## 安全与确认规则
+
+- 默认只执行只读查询命令：`sessions`、`history`、`search`、`contacts`、`members`、`stats`、`export`、`favorites`、`unread`、`new-messages`。
+- `init` / `init --force` / `sudo` / `codesign` 都不是默认动作。只有用户明确要初始化或查询因未初始化而无法继续时，才先解释风险再征求确认。
+- 严禁输出或分享 `~/.wechat-cli/all_keys.json` 内容。
+- 若查询结果包含本地媒体路径、wxid、手机号、头像 URL、签名等信息，默认只返回解决当前问题所需的最少字段。
+- 若用户要求导出或大批量检索，优先缩小 `--start-time`、`--end-time`、`--limit`，避免一次性暴露过多数据。
+
+## 任务路由
+
+| 用户意图 | 首选命令 | 备注 |
+|---|---|---|
+| 看最近和谁聊过 | `sessions` | 最近会话列表 |
+| 看某人/某群最近消息 | `history` | 支持分页、时间范围、类型过滤 |
+| 搜某句话/某个关键词 | `search` | 可全局，也可限制到一个或多个聊天 |
+| 查联系人/微信号 | `contacts` | `--query` 搜索，`--detail` 看详情 |
+| 看群成员 | `members` | 只适用于群聊 |
+| 看谁最活跃/类型分布 | `stats` | 适合群聊和单聊统计 |
+| 导出一段对话 | `export` | 输出 `markdown` 或 `txt` |
+| 看微信收藏 | `favorites` | 支持类型和关键词过滤 |
+| 看当前未读 | `unread` | 所有未读会话 |
+| 看上次检查后新增的消息 | `new-messages` | 有状态增量查询 |
+
+## 推荐工作流
+
+### 1. 定位对象
+
+- 联系人/群名不确定：先 `contacts --query`
+- 用户直接给了 wxid 或 `@chatroom`：可直接用于后续命令
+
+### 2. 选择查询方式
+
+- 要“完整上下文”用 `history`
+- 要“关键词命中”用 `search`
+- 要“列表概览”用 `sessions` / `unread` / `favorites`
+- 要“结构统计”用 `stats`
+- 要“交付文件”用 `export`
+
+### 3. 缩小范围
+
+优先补这些参数：
+
+- `--chat`
+- `--start-time`
+- `--end-time`
+- `--limit`
+- `--offset`
+- `--type`
+
+### 4. 返回结果
+
+- 默认先给结论，再附少量关键证据
+- 长结果先总结，再按需展开
+- 用户若要原始输出，再返回完整 JSON / text / 导出文件
 
 ## 初始化
 
-首次使用前必须运行 `init`，从微信进程内存中提取数据库加密密钥（微信必须处于**登录状态且正在运行**）：
+首次使用前通常需要运行 `init`，从微信进程内存中提取数据库加密密钥。只有在用户明确同意后，才执行这一步。微信必须处于**登录状态且正在运行**。
 
 ```bash
 sudo wechat-cli init              # macOS/Linux 通常需要 sudo
@@ -45,19 +119,27 @@ wechat-cli init --force           # 强制重新提取密钥
 
 | 命令 | 用途 | 典型场景 |
 |------|------|---------|
-| `init` | 初始化密钥 | "首次配置 wechat-cli" |
-| `sessions` | 最近会话列表 | "看看最近和谁聊过" |
-| `history` | 聊天记录 | "看看和Alice的聊天记录" |
-| `search` | 搜索消息 | "搜一下谁发过这个链接" |
-| `contacts` | 联系人查询 | "查一下某人的微信号" |
-| `members` | 群成员列表 | "看看群里有谁" |
-| `stats` | 聊天统计 | "这个群谁最活跃" |
-| `export` | 导出记录 | "导出这段对话" |
-| `favorites` | 收藏内容 | "看看我收藏了什么文章" |
-| `unread` | 未读消息 | "有没有未读消息" |
-| `new-messages` | 增量新消息 | "上次看过之后有什么新消息" |
+| `init` | 初始化密钥 | “首次配置 wechat-cli” |
+| `sessions` | 最近会话列表 | “看看最近和谁聊过” |
+| `history` | 聊天记录 | “看看和 Alice 的聊天记录” |
+| `search` | 搜索消息 | “搜一下谁发过这个链接” |
+| `contacts` | 联系人查询 | “查一下某人的微信号” |
+| `members` | 群成员列表 | “看看群里有谁” |
+| `stats` | 聊天统计 | “这个群谁最活跃” |
+| `export` | 导出记录 | “导出这段对话” |
+| `favorites` | 收藏内容 | “看看我收藏了什么文章” |
+| `unread` | 未读消息 | “有没有未读消息” |
+| `new-messages` | 增量新消息 | “上次看过之后有什么新消息” |
 
----
+## 自然语言到命令的常见映射
+
+- “帮我找一下微信里谁说过‘预算冻结’” -> `search "预算冻结"`
+- “看看 Alice 最近聊了什么” -> `history "Alice" --limit 50`
+- “导出我和 Bob 昨天的聊天” -> `export "Bob" --start-time "YYYY-MM-DD" --end-time "YYYY-MM-DD" --format markdown`
+- “看看产品群都有谁” -> `members "产品群"`
+- “这个群谁最活跃” -> `stats "群名"`
+- “我最近有谁没回” / “有没有未读” -> `unread`
+- “上次看完之后又来了什么消息” -> `new-messages`
 
 ## sessions — 最近会话
 
@@ -76,7 +158,7 @@ wechat-cli sessions --format text
 
 **JSON 输出字段**：`chat`（显示名）、`username`（wxid）、`is_group`、`unread`、`last_message`、`msg_type`、`sender`（群聊时）、`timestamp`、`time`
 
----
+适合先做概览，再决定是否继续 `history` 或 `search`。
 
 ## history — 聊天记录
 
@@ -87,7 +169,7 @@ wechat-cli history "Alice"
 wechat-cli history "Alice" --limit 100 --offset 50
 wechat-cli history "工作群" --start-time "2026-04-01" --end-time "2026-04-03"
 wechat-cli history "Alice" --type link
-wechat-cli history "Alice" --media    # 解析本地媒体文件路径
+wechat-cli history "Alice" --media
 ```
 
 | 参数 | 默认值 | 说明 |
@@ -101,7 +183,7 @@ wechat-cli history "Alice" --media    # 解析本地媒体文件路径
 | `--media` | `false` | 解析并返回图片/视频/语音/文件的本地磁盘路径 |
 | `--format json\|text` | `json` | 输出格式 |
 
----
+适合用户已经知道聊天对象，并且需要连续上下文时使用。
 
 ## search — 搜索消息
 
@@ -110,7 +192,7 @@ wechat-cli history "Alice" --media    # 解析本地媒体文件路径
 ```bash
 wechat-cli search "会议纪要"
 wechat-cli search "hello" --chat "Alice"
-wechat-cli search "报告" --chat "团队A" --chat "团队B"   # 多聊天搜索
+wechat-cli search "报告" --chat "团队A" --chat "团队B"
 wechat-cli search "合同" --type file --start-time "2026-01-01"
 ```
 
@@ -126,11 +208,11 @@ wechat-cli search "合同" --type file --start-time "2026-01-01"
 | `--format json\|text` | `json` | 输出格式 |
 
 **搜索范围逻辑**：
-- 不指定 `--chat` → 全局搜索所有消息
-- 指定 1 个 `--chat` → 单聊搜索
-- 指定多个 `--chat` → 多聊搜索，结果按时间合并排序
+- 不指定 `--chat` -> 全局搜索所有消息
+- 指定 1 个 `--chat` -> 单聊搜索
+- 指定多个 `--chat` -> 多聊搜索，结果按时间合并排序
 
----
+适合“谁说过这句话”“这个关键词在哪些群出现过”。
 
 ## contacts — 联系人查询
 
@@ -151,7 +233,7 @@ wechat-cli contacts --detail "wxid_xxx"
 
 **详情模式额外字段**：`alias`（微信号）、`description`（个性签名）、`avatar`（头像 URL）、`is_group`、`is_subscription`（公众号）
 
----
+在名字不确定、备注和昵称可能不一致时，先用它做目标确认。
 
 ## members — 群成员
 
@@ -167,13 +249,13 @@ wechat-cli members "xxx@chatroom"
 | `<group_name>` | *必填* | 群名称、备注或 `@chatroom` ID |
 | `--format json\|text` | `json` | 输出格式 |
 
-**JSON 输出**：`group`、`username`（@chatroom ID）、`member_count`、`owner`、`members`（包含 `username`、`nick_name`、`remark`、`display_name`，群主排第一）
+**JSON 输出**：`group`、`username`（`@chatroom` ID）、`member_count`、`owner`、`members`（包含 `username`、`nick_name`、`remark`、`display_name`，群主排第一）
 
----
+如果目标不是群聊，这个命令会报错。
 
 ## stats — 聊天统计
 
-聚合指定聊天的统计数据（消息总量、类型分布、活跃发送者、24小时活跃度）。
+聚合指定聊天的统计数据（消息总量、类型分布、活跃发送者、24 小时活跃度）。
 
 ```bash
 wechat-cli stats "工作群"
@@ -187,9 +269,9 @@ wechat-cli stats "Alice" --start-time "2026-04-01" --end-time "2026-04-07"
 | `--end-time <date>` | — | 结束时间 |
 | `--format json\|text` | `json` | 输出格式 |
 
-**JSON 输出**：`total`（总消息数）、`type_breakdown`（类型分布）、`top_senders`（前10活跃发送者）、`hourly`（24小时活跃度分布）
+**JSON 输出**：`total`（总消息数）、`type_breakdown`（类型分布）、`top_senders`（前 10 活跃发送者）、`hourly`（24 小时活跃度分布）
 
----
+适合“谁最活跃”“这个群主要发什么类型消息”这类问题。
 
 ## export — 导出记录
 
@@ -210,7 +292,7 @@ wechat-cli export "工作群" --start-time "2026-04-01" --limit 1000
 | `--end-time <date>` | — | 结束时间 |
 | `--limit <n>` | `500` | 导出数量上限 |
 
----
+当用户明确要文件产物或长文本留存时使用；若只是问答，不要优先导出。
 
 ## favorites — 收藏内容
 
@@ -229,7 +311,7 @@ wechat-cli favorites --query "机器学习" --limit 5
 | `--query <text>` | — | 关键词搜索 |
 | `--format json\|text` | `json` | 输出格式 |
 
----
+适合找“我收藏过什么”“收藏里有没有某篇文章/某个关键词”。
 
 ## unread — 未读消息
 
@@ -245,7 +327,7 @@ wechat-cli unread --limit 10 --format text
 | `--limit <n>` | `50` | 返回数量上限 |
 | `--format json\|text` | `json` | 输出格式 |
 
----
+适合快速确认当前待处理会话。
 
 ## new-messages — 增量新消息
 
@@ -265,7 +347,7 @@ wechat-cli new-messages --format text
 - **后续调用**：对比时间戳差异，返回有新消息的会话
 - **重置**：删除 `~/.wechat-cli/last_check.json` 即可重置状态
 
----
+适合“从我上次检查之后发生了什么”这类请求。
 
 ## 消息类型过滤
 
@@ -293,9 +375,11 @@ wechat-cli new-messages --format text
 
 也可以直接使用 wxid（如 `wxid_xxx`）或群 ID（如 `xxx@chatroom`）。
 
-## 常见问题
+## 常见处理策略
 
-- **初始化失败** → 确认微信正在运行且已登录；macOS/Linux 用 `sudo`；Windows 用管理员终端
-- **密钥过期** → 微信重新登录后需 `wechat-cli init --force`
-- **联系人找不到** → 尝试备注名、昵称或 wxid；支持模糊匹配
-- **数据过时** → 删除 `/tmp/wechat_cli_cache/` 强制刷新缓存
+- **找不到联系人/群** -> 先用 `contacts --query`，再尝试备注、昵称、wxid 或 `@chatroom`
+- **只知道关键词，不知道聊天对象** -> 先 `search`，再对命中的聊天补 `history`
+- **结果太多** -> 缩小时间范围、聊天范围或 `--limit`
+- **想要完整留档** -> 用 `export`
+- **想要增量查看** -> 用 `new-messages`
+- **未初始化或密钥失效** -> 解释 `init` / `init --force` 风险并征求确认
