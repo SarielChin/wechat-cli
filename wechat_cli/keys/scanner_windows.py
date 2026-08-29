@@ -5,6 +5,7 @@ import ctypes.wintypes as wt
 import functools
 import os
 import re
+import struct
 import subprocess
 import time
 
