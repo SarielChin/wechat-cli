@@ -26,6 +26,19 @@ def verify_enc_key(enc_key, db_page1):
     salt = db_page1[:SALT_SZ]
     mac_salt = bytes(b ^ 0x3A for b in salt)
 
+    # 旧版微信：PBKDF2-HMAC-SHA512 + HMAC-SHA512。只做 2 轮 PBKDF2，
+    # 成本远低于下面 SHA1 的 64000 轮，所以先试，避免拖慢暴力扫描。
+    try:
+        mac_key = hashlib.pbkdf2_hmac("sha512", enc_key, mac_salt, 2, dklen=KEY_SZ)
+        hmac_data = db_page1[SALT_SZ: PAGE_SZ - 80 + 16]
+        stored_hmac = db_page1[PAGE_SZ - 64: PAGE_SZ]
+        hm = hmac_mod.new(mac_key, hmac_data, hashlib.sha512)
+        hm.update(struct.pack("<I", 1))
+        if hm.digest() == stored_hmac:
+            return True
+    except (TypeError, ValueError):
+        pass
+
     # 新版微信 3.9+：PBKDF2-HMAC-SHA1 + HMAC-SHA1。
     try:
         mac_key = hashlib.pbkdf2_hmac("sha1", enc_key, mac_salt, 64000, dklen=KEY_SZ)
@@ -37,17 +50,7 @@ def verify_enc_key(enc_key, db_page1):
             return True
     except (TypeError, ValueError):
         pass
-
-    # 旧版微信：PBKDF2-HMAC-SHA512 + HMAC-SHA512。
-    try:
-        mac_key = hashlib.pbkdf2_hmac("sha512", enc_key, mac_salt, 2, dklen=KEY_SZ)
-        hmac_data = db_page1[SALT_SZ: PAGE_SZ - 80 + 16]
-        stored_hmac = db_page1[PAGE_SZ - 64: PAGE_SZ]
-        hm = hmac_mod.new(mac_key, hmac_data, hashlib.sha512)
-        hm.update(struct.pack("<I", 1))
-        return hm.digest() == stored_hmac
-    except (TypeError, ValueError):
-        return False
+    return False
 
 
 def collect_db_files(db_dir):

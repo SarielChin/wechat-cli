@@ -343,7 +343,6 @@ def extract_keys(db_dir, output_path, pid=None):
             matched = _scan_config_cipher(pid_val, h, regions, db_files, salt_to_dbs, key_map, remaining_salts)
             if matched and not remaining_salts:
                 print(f"[+] Config.Cipher 扫描已覆盖所有数据库")
-                kernel32.CloseHandle(h)
                 break
 
             # 如果还有剩余，回退到传统扫描
