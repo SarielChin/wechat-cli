@@ -14,7 +14,7 @@ from .key_utils import key_path_variants
 
 _zstd_dctx = zstd.ZstdDecompressor()
 _XML_UNSAFE_RE = re.compile(r'<!DOCTYPE|<!ENTITY', re.IGNORECASE)
-_XML_PARSE_MAX_LEN = 20000
+_XML_PARSE_MAX_LEN = 200000
 _QUERY_LIMIT_MAX = 500
 _HISTORY_QUERY_BATCH_SIZE = 500
 
@@ -149,9 +149,130 @@ def _parse_int(value, fallback=0):
         return fallback
 
 
+def _format_merged_forward_message(content, appmsg):
+    """解析合并转发消息 (app_type=17/19)，提取其中嵌套的逐条消息。
+
+    返回格式:
+        [合并转发] 标题
+          ├ 发送者: 消息内容
+          ├ 发送者: [文件] 文件名
+          └ ...
+    如果无法解析则返回 None。
+    """
+    records = appmsg.findall('recorditem')
+    if not records:
+        return None
+
+    title = _collapse_text(appmsg.findtext('title') or '') or '聊天记录'
+    # 从 appmsg/des 获取摘要文本（也有可能是完整描述）
+    summary_text = _collapse_text(appmsg.findtext('des') or '')
+
+    parts = [f"[合并转发] {title}"]
+
+    for record_elem in records:
+        cdata = record_elem.text or ''
+        if not cdata.strip():
+            continue
+        # 去掉 CDATA 包装标记，提取纯 XML
+        inner_xml = cdata.strip()
+        if inner_xml.startswith('<![CDATA['):
+            inner_xml = inner_xml[9:]
+        if inner_xml.endswith(']]>'):
+            inner_xml = inner_xml[:-3] + inner_xml[-3:].replace(']]>', '')
+        # 清理
+        inner_xml = inner_xml.replace('<![CDATA[', '').replace(']]>', '').strip()
+        if not inner_xml:
+            continue
+
+        record_root = _parse_xml_root(inner_xml)
+        if record_root is None:
+            continue
+
+        # 尝试解析 <datalist> 中的 <dataitem> 元素（最精确）
+        datalist = record_root.find('.//datalist')
+        parsed_items = False
+        if datalist is not None:
+            dataitems = datalist.findall('dataitem')
+            if dataitems:
+                parsed_items = True
+                for item in dataitems:
+                    sender = _collapse_text(item.findtext('sourcename') or '')
+                    msg_time = _collapse_text(item.findtext('sourcetime') or '')
+                    datatype = _parse_int(item.findtext('datatype') or '0', 0)
+                    datadesc = _collapse_text(item.findtext('datadesc') or '')
+                    datatitle = _collapse_text(item.findtext('datatitle') or '')
+                    datafmt = _collapse_text(item.findtext('datafmt') or '')
+
+                    # 根据数据类型格式化
+                    type_labels = {1: '', 2: '[图片]', 8: '[文件]', 17: '[合并转发]'}
+                    type_label = type_labels.get(datatype, f'[type={datatype}]')
+
+                    if datatype == 0 and not datadesc and not datatitle:
+                        continue  # 空分隔符/占位项，跳过
+                    if datatype == 8:  # 文件
+                        fname = datatitle or datadesc or '未知文件'
+                        ext = f' .{datafmt}' if datafmt else ''
+                        body = f'[文件] {fname}{ext}'
+                    elif datatype == 2:  # 图片
+                        body = '[图片]'
+                    elif datatype == 17:  # 嵌套合并转发
+                        body = f'[合并转发] {datatitle}'
+                    else:
+                        body = datadesc or datatitle or type_label
+
+                    # 截断过长消息
+                    if len(body) > 200:
+                        body = body[:200] + '...'
+
+                    prefix = f'  ├ {sender}' if sender else '  ├'
+                    if msg_time:
+                        prefix += f' [{msg_time}]'
+                    parts.append(f'{prefix}: {body}')
+                continue  # 已处理此 recorditem
+
+        # 回退：解析 <desc> 字段（摘要模式）
+        desc_text = _collapse_text(record_root.findtext('desc') or '')
+        if desc_text:
+            # <desc> 的格式: "发送者: 内容\n发送者: 内容\n..."
+            # HTML 实体解码
+            import html
+            desc_text = html.unescape(desc_text)
+            for line in desc_text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                if ':' in line:
+                    colon_pos = line.index(':')
+                    sender_part = line[:colon_pos].strip()
+                    msg_part = line[colon_pos + 1:].strip()
+                    if len(msg_part) > 200:
+                        msg_part = msg_part[:200] + '...'
+                    parts.append(f'  ├ {sender_part}: {msg_part}')
+                else:
+                    # 没有冒号 = 可能是纯内容
+                    if len(line) > 200:
+                        line = line[:200] + '...'
+                    parts.append(f'  ├ {line}')
+
+    # 如果只解析出标题（空转发），回退 summary_text
+    if len(parts) == 1 and summary_text:
+        for line in summary_text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            if len(line) > 200:
+                line = line[:200] + '...'
+            parts.append(f'  ├ {line}')
+
+    return '\n'.join(parts)
+
+
 def _format_app_message_text(content, local_type, is_group, chat_username, chat_display_name, names, _display_name_fn, resolve_media=False, db_dir=None, create_time_ts=0):
     if not content or '<appmsg' not in content:
         return None
+    # 部分消息在 <msg> 内部嵌入了 <?xml version="1.0"?> 声明，导致 XML 解析失败
+    # 将其移除后再解析
+    content = re.sub(r'<\?xml\b[^?]*\?>', '', content)
     _, sub_type = _split_msg_type(local_type)
     root = _parse_xml_root(content)
     if root is None:
@@ -195,9 +316,19 @@ def _format_app_message_text(content, local_type, is_group, chat_username, chat_
                                 return f"[文件] {title}\n  {os.path.join(file_dir, f)}"
         return f"[文件] {title}" if title else "[文件]"
     if app_type == 5:
-        return f"[链接] {title}" if title else "[链接]"
+        url = _collapse_text(appmsg.findtext('url') or '')
+        label = f"[链接] {title}" if title else "[链接]"
+        if url:
+            label += f"\n  {url}"
+        return label
     if app_type in (33, 36, 44):
         return f"[小程序] {title}" if title else "[小程序]"
+    if app_type in (17, 19):
+        merged = _format_merged_forward_message(content, appmsg)
+        if merged is not None:
+            return merged
+        # 回退：至少显示标题
+        return f"[合并转发] {title}" if title else "[合并转发]"
     if title:
         return f"[链接/文件] {title}"
     return "[链接/文件]"
@@ -528,6 +659,45 @@ def _build_history_line(row, ctx, names, id_to_username, display_name_fn, resolv
     return create_time, f'[{time_str}] {text}'
 
 
+def _build_history_record(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
+    """构造单条消息的结构化记录（用于 jsonl 输出）。
+
+    与 _build_history_line 平行 — 同样的字段解压与格式化，但返回 dict 而非格式化字符串。
+    """
+    local_id, local_type, create_time, real_sender_id, content, ct = row
+    content = decompress_content(content, ct)
+    if content is None:
+        content = '(无法解压)'
+    sender_from_content, text = _format_message_text(
+        local_id, local_type, content, ctx['is_group'], ctx['username'], ctx['display_name'], names, display_name_fn,
+        db_dir=db_dir, create_time_ts=create_time, resolve_media=resolve_media,
+    )
+    sender_username = id_to_username.get(real_sender_id, '') or ''
+    sender_display = _resolve_sender_label(
+        real_sender_id, sender_from_content, ctx['is_group'], ctx['username'], ctx['display_name'],
+        names, id_to_username, display_name_fn,
+    )
+    # is_self: 在 1:1 聊天中 sender_username 不等于对方 username 即为自己；
+    # 在群聊中，sender_username 与 sender_from_content 都为空时通常为自己发的消息。
+    if ctx['is_group']:
+        is_self = not sender_username and not sender_from_content
+    else:
+        is_self = bool(sender_username) and sender_username != ctx['username']
+    return create_time, {
+        'local_id': local_id,
+        'create_time': create_time,
+        'msg_type': format_msg_type(local_type),
+        'local_type': local_type,
+        'is_self': is_self,
+        'sender_id': sender_username,
+        'sender_display': sender_display,
+        'is_group': ctx['is_group'],
+        'chat_username': ctx['username'],
+        'chat_display': ctx['display_name'],
+        'text': text,
+    }
+
+
 def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolve_media=False, db_dir=None):
     local_id, local_type, create_time, real_sender_id, content, ct = row
     content = decompress_content(content, ct)
@@ -552,11 +722,17 @@ def _build_search_entry(row, ctx, names, id_to_username, display_name_fn, resolv
 
 # ---- 聊天记录查询 ----
 
-def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None, limit=20, offset=0, msg_type_filter=None, resolve_media=False, db_dir=None):
+def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None, limit=20, offset=0, msg_type_filter=None, resolve_media=False, db_dir=None, as_records=False):
+    """收集聊天记录。
+
+    as_records=False（默认）：返回格式化字符串列表（保持与现有调用方兼容）。
+    as_records=True：返回结构化 dict 列表（供 jsonl 输出等场景使用）。
+    """
     collected = []
     failures = []
     candidate_limit = _candidate_page_size(limit, offset)
     batch_size = min(candidate_limit, _HISTORY_QUERY_BATCH_SIZE)
+    builder = _build_history_record if as_records else _build_history_line
 
     for table_ctx in _iter_table_contexts(ctx):
         try:
@@ -571,7 +747,7 @@ def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None
                     fetch_offset += len(rows)
                     for row in rows:
                         try:
-                            collected.append(_build_history_line(row, table_ctx, names, id_to_username, display_name_fn, resolve_media=resolve_media, db_dir=db_dir))
+                            collected.append(builder(row, table_ctx, names, id_to_username, display_name_fn, resolve_media=resolve_media, db_dir=db_dir))
                         except Exception as e:
                             failures.append(f"local_id={row[0]}: {e}")
                         if len(collected) - before >= candidate_limit:
@@ -582,7 +758,7 @@ def collect_chat_history(ctx, names, display_name_fn, start_ts=None, end_ts=None
             failures.append(f"{table_ctx['db_path']}: {e}")
 
     paged = _page_ranked_entries(collected, limit, offset)
-    return [line for _, line in paged], failures
+    return [item for _, item in paged], failures
 
 
 # ---- 搜索查询 ----
