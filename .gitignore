@@ -42,3 +42,6 @@ Thumbs.db
 # Temp files
 *.tmp
 *.bak
+
+# Local-only Claude notes
+CLAUDE.local.md
