@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import sys
 
 import click
@@ -49,8 +50,13 @@ def init(db_dir, force):
         key_map = extract_keys(db_dir, KEYS_FILE)
     except RuntimeError as e:
         click.echo(f"\n[!] 密钥提取失败: {e}", err=True)
-        if "sudo" not in str(e).lower():
+        if platform.system().lower() != "windows" and "sudo" not in str(e).lower():
             click.echo("提示: macOS/Linux 可能需要 sudo 权限", err=True)
+        elif platform.system().lower() == "windows":
+            click.echo(
+                "提示: 请确认 Weixin.exe 已启动；多账号时请保证所选 db_storage 与当前登录账号一致。",
+                err=True,
+            )
         sys.exit(1)
     except Exception as e:
         click.echo(f"\n[!] 密钥提取出错: {e}", err=True)

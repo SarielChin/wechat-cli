@@ -8,6 +8,7 @@ import hashlib
 import hmac as hmac_mod
 import json
 import os
+import platform
 import re
 import struct
 
@@ -169,6 +170,13 @@ def save_results(db_files, salt_to_dbs, key_map, output_path, print_fn):
 
     if not result:
         print_fn(f"\n[!] 未提取到任何密钥")
+        if platform.system().lower() == "windows":
+            raise RuntimeError(
+                "未能从当前已运行的 Weixin.exe 内存中匹配到所选 db_storage 下数据库所需的密钥。"
+                "常见原因：所选目录不是「当前已登录」微信账号的数据——内存里只有正在使用这一份会话的密钥。"
+                "请先在微信里登录目标账号（或退出后只登录该账号），再选择与该账号 wxid 文件夹一致的 db_storage 重试；"
+                "列表中排第一的目录多为最近活跃账号，通常应对应当前窗口。"
+            )
         raise RuntimeError("未能从任何微信进程中提取到密钥")
 
     with open(output_path, 'w', encoding='utf-8') as f:
