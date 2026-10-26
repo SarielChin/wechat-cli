@@ -1,6 +1,6 @@
 ---
 name: wechat-cli
-version: 1.1.0
+version: 1.2.0
 description: |
   微信本地聊天数据查询工具。只要用户想查看这台机器上的微信聊天记录、搜索消息、查联系人或群成员、看最近会话、未读消息、收藏、聊天统计、导出对话，或者提到“微信里”“群里谁说过”“把这段聊天导出来”“最近谁联系我了”“这个群谁最活跃”，都应该优先使用这个技能；即使用户没有明确说 wechat-cli，也应触发。
 metadata:
@@ -113,7 +113,14 @@ wechat-cli init --force           # 强制重新提取密钥
 |------|--------|------|
 | `--config <path>` | 自动 | 配置文件路径，也可通过 `WECHAT_CLI_CONFIG` 环境变量指定 |
 
-说明：`--format` 不是全局参数，而是子命令参数。多数查询命令支持 `json|text`，`export` 仅支持 `markdown|txt`。
+说明：`--format` 不是全局参数，而是子命令参数。多数查询命令支持 `json|text`（默认 `json`），`history` 另外支持 `jsonl`，`export` 仅支持 `markdown|txt`。
+
+## 时间与排序
+
+- `--start-time` / `--end-time` 支持 `YYYY-MM-DD`、`YYYY-MM-DD HH:MM`、`YYYY-MM-DD HH:MM:SS`。
+- 只写日期的 `--end-time` 会自动算到当天 23:59:59，所以 `--start-time 2026-04-01 --end-time 2026-04-01` 就是 4 月 1 日整天。
+- `history`、`search`、`export` 先取**最新**的符合条件的消息（`--offset` 从最新往前跳），再把这一页按**时间先后**排列，最旧的在前。所以“最新一条”在结果的**最后**。
+- `sessions`、`unread` 按最后消息时间倒序，最新的在前。
 
 ## 命令速查表
 
@@ -135,7 +142,7 @@ wechat-cli init --force           # 强制重新提取密钥
 
 - “帮我找一下微信里谁说过‘预算冻结’” -> `search "预算冻结"`
 - “看看 Alice 最近聊了什么” -> `history "Alice" --limit 50`
-- “导出我和 Bob 昨天的聊天” -> `export "Bob" --start-time "YYYY-MM-DD" --end-time "YYYY-MM-DD" --format markdown`
+- “导出我和 Bob 昨天的聊天” -> `export "Bob" --start-time "YYYY-MM-DD" --end-time "YYYY-MM-DD" --format markdown`（只写日期的 `--end-time` 会涵盖当天整天）
 - “看看产品群都有谁” -> `members "产品群"`
 - “这个群谁最活跃” -> `stats "群名"`
 - “我最近有谁没回” / “有没有未读” -> `unread`
@@ -156,7 +163,7 @@ wechat-cli sessions --format text
 | `--limit <n>` | `20` | 返回数量上限 |
 | `--format json\|text` | `json` | 输出格式 |
 
-**JSON 输出字段**：`chat`（显示名）、`username`（wxid）、`is_group`、`unread`、`last_message`、`msg_type`、`sender`（群聊时）、`timestamp`、`time`
+**JSON 输出**：数组，每项字段为 `chat`（显示名）、`username`（wxid）、`is_group`、`unread`、`last_message`、`msg_type`、`sender`（群聊时）、`timestamp`、`time`
 
 适合先做概览，再决定是否继续 `history` 或 `search`。
 
@@ -170,18 +177,25 @@ wechat-cli history "Alice" --limit 100 --offset 50
 wechat-cli history "工作群" --start-time "2026-04-01" --end-time "2026-04-03"
 wechat-cli history "Alice" --type link
 wechat-cli history "Alice" --media
+wechat-cli history "Alice" --format jsonl
 ```
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `<chat_name>` | *必填* | 联系人名称、备注、昵称或 wxid |
+| `<chat_name>` | *必填* | 联系人名称、备注、昵称、wxid 或 `@chatroom` ID |
 | `--limit <n>` | `50` | 返回数量上限 |
 | `--offset <n>` | `0` | 分页偏移量 |
-| `--start-time <date>` | — | 起始时间（`YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`） |
+| `--start-time <date>` | — | 起始时间（`YYYY-MM-DD`、`YYYY-MM-DD HH:MM` 或 `YYYY-MM-DD HH:MM:SS`） |
 | `--end-time <date>` | — | 结束时间 |
 | `--type <type>` | — | 消息类型过滤（见下方类型表） |
 | `--media` | `false` | 解析并返回图片/视频/语音/文件的本地磁盘路径 |
-| `--format json\|text` | `json` | 输出格式 |
+| `--format json\|jsonl\|text` | `json` | 输出格式 |
+
+**输出格式**：
+- `json`：`{chat, username, is_group, count, offset, limit, start_time, end_time, type, messages, failures}`。`messages` 里每条是**排好版的字符串**（时间、发送者、内容），不是对象。
+- `jsonl`：每行一个 JSON 对象，便于流式消费或按字段处理：`{local_id, create_time, msg_type, local_type, is_self, sender_id, sender_display, is_group, chat_username, chat_display, text}`。查询失败的信息以 `failure: …` 输出到 stderr。
+
+需要自己按发送者、类型或时间过滤、统计时，优先用 `jsonl`。
 
 适合用户已经知道聊天对象，并且需要连续上下文时使用。
 
@@ -211,6 +225,8 @@ wechat-cli search "合同" --type file --start-time "2026-01-01"
 - 不指定 `--chat` -> 全局搜索所有消息
 - 指定 1 个 `--chat` -> 单聊搜索
 - 指定多个 `--chat` -> 多聊搜索，结果按时间合并排序
+
+**JSON 输出**：`{scope, keyword, count, offset, limit, start_time, end_time, type, results, failures}`。`results` 里每条是排好版的字符串：`"[YYYY-MM-DD HH:MM] [聊天名] 发送者: 内容"`。
 
 适合“谁说过这句话”“这个关键词在哪些群出现过”。
 
@@ -269,7 +285,7 @@ wechat-cli stats "Alice" --start-time "2026-04-01" --end-time "2026-04-07"
 | `--end-time <date>` | — | 结束时间 |
 | `--format json\|text` | `json` | 输出格式 |
 
-**JSON 输出**：`total`（总消息数）、`type_breakdown`（类型分布）、`top_senders`（前 10 活跃发送者）、`hourly`（24 小时活跃度分布）
+**JSON 输出**：`chat`、`username`、`is_group`、`total`（总消息数）、`type_breakdown`（类型分布）、`top_senders`（前 10 活跃发送者）、`hourly`（24 小时活跃度分布）
 
 适合“谁最活跃”“这个群主要发什么类型消息”这类问题。
 
@@ -281,6 +297,7 @@ wechat-cli stats "Alice" --start-time "2026-04-01" --end-time "2026-04-07"
 wechat-cli export "Alice" --format markdown
 wechat-cli export "Alice" --format txt --output chat.txt
 wechat-cli export "工作群" --start-time "2026-04-01" --limit 1000
+wechat-cli export "Alice" --media --output chat.md
 ```
 
 | 参数 | 默认值 | 说明 |
@@ -291,6 +308,7 @@ wechat-cli export "工作群" --start-time "2026-04-01" --limit 1000
 | `--start-time <date>` | — | 起始时间 |
 | `--end-time <date>` | — | 结束时间 |
 | `--limit <n>` | `500` | 导出数量上限 |
+| `--media` | `false` | 解析并写入图片/视频/语音/文件的本地磁盘路径 |
 
 当用户明确要文件产物或长文本留存时使用；若只是问答，不要优先导出。
 
@@ -311,6 +329,8 @@ wechat-cli favorites --query "机器学习" --limit 5
 | `--query <text>` | — | 关键词搜索 |
 | `--format json\|text` | `json` | 输出格式 |
 
+**JSON 输出**：`{count, favorites}`，每项字段为 `id`、`type`、`time`、`summary`、`from`、`source_chat`。
+
 适合找“我收藏过什么”“收藏里有没有某篇文章/某个关键词”。
 
 ## unread — 未读消息
@@ -326,6 +346,8 @@ wechat-cli unread --limit 10 --format text
 |------|--------|------|
 | `--limit <n>` | `50` | 返回数量上限 |
 | `--format json\|text` | `json` | 输出格式 |
+
+**JSON 输出**：与 `sessions` 相同的数组，只包含有未读消息的会话。
 
 适合快速确认当前待处理会话。
 
@@ -343,9 +365,11 @@ wechat-cli new-messages --format text
 | `--format json\|text` | `json` | 输出格式 |
 
 **行为说明**：
-- **首次调用**（无状态文件）：返回当前未读会话并保存时间戳，JSON 包含 `"first_call": true`
-- **后续调用**：对比时间戳差异，返回有新消息的会话
+- **首次调用**（无状态文件）：返回当前未读会话并保存时间戳。JSON：`{first_call: true, unread_count, messages}`
+- **后续调用**：对比时间戳差异，返回有新消息的会话。JSON：`{first_call: false, new_count, messages}`
 - **重置**：删除 `~/.wechat-cli/last_check.json` 即可重置状态
+
+每次调用都会把检查点往后移，所以不要为了“看一眼”而调用；只是想看看时用 `unread` 或 `sessions`。
 
 适合“从我上次检查之后发生了什么”这类请求。
 
@@ -369,11 +393,24 @@ wechat-cli new-messages --format text
 ## 联系人名称匹配规则
 
 所有接受 `<chat_name>` 或 `--chat` 的命令都使用以下匹配优先级：
-1. 精确匹配（备注 > 昵称 > wxid）
-2. 不区分大小写的精确匹配
-3. 不区分大小写的子串匹配
+1. 精确匹配已知的名称或 ID（wxid 如 `wxid_xxx`、群 ID 如 `xxx@chatroom` 会直接使用）
+2. 对显示名做不区分大小写的精确匹配
+3. 对显示名做不区分大小写的子串匹配
 
-也可以直接使用 wxid（如 `wxid_xxx`）或群 ID（如 `xxx@chatroom`）。
+太短的子串可能匹配到错误的聊天。请核对结果里的 `chat` / `username` 字段；需要精确时直接传 wxid 或 `@chatroom` ID。
+
+## 错误与退出码
+
+错误信息以中文输出到 stderr。
+
+| 退出码 | 含义 | 处理方式 |
+|---|---|---|
+| `0` | 成功 | — |
+| `1` | 找不到聊天对象、该聊天没有消息记录，或尚未初始化 | stderr 出现 `请运行: wechat-cli init` 时见“初始化”；否则先用 `contacts --query`，或改用备注、昵称、wxid、`@chatroom` ID |
+| `2` | 参数错误（时间格式、分页） | 修正参数 |
+| `3` | 数据库无法解密或打开 | 密钥可能已失效，说明风险后征求确认再 `init --force` |
+
+例外：`contacts --detail` 找不到联系人时会在 stderr 输出 `找不到联系人`，但退出码仍是 `0`，需检查 stdout 是否为空。
 
 ## 常见处理策略
 
@@ -383,3 +420,4 @@ wechat-cli new-messages --format text
 - **想要完整留档** -> 用 `export`
 - **想要增量查看** -> 用 `new-messages`
 - **未初始化或密钥失效** -> 解释 `init` / `init --force` 风险并征求确认
+- **Windows 上中文乱码** -> 运行前设置 `PYTHONUTF8=1`（或 `PYTHONIOENCODING=utf-8`），管道输出时尤其需要
