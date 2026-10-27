@@ -52,6 +52,9 @@ def build_platform(platform: str):
         "--specpath", str(ROOT / "build"),
         "--noconfirm",
         "--clean",
+        # Frozen apps ignore PYTHONUTF8; force UTF-8 so piped output isn't
+        # encoded in the Windows ANSI code page
+        "--python-option", "X utf8",
     ]
 
     # Bundle C binaries for key extraction
